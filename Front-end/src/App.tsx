@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import axios from 'axios';
+import imageCompression from 'browser-image-compression';
 import { Header } from './components/Header';
 import { UploadSection } from './components/UploadSection';
 import { ProcessingScreen } from './components/ProcessingScreen';
@@ -43,12 +44,22 @@ export default function App() {
     setCurrentScreen('processing');
 
     try {
-      // 1. Upload the photo
-      const formData = new FormData();
-      formData.append('photo', uploadedPhoto.file);
-      formData.append('style', selectedStyle);
+      const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      
+      // Compress images before upload to stay under Vercel limits
+      const compressionOptions = {
+        maxSizeMB: 1,
+        maxWidthOrHeight: 2048,
+        useWebWorker: true
+      };
 
-      const uploadRes = await axios.post('http://localhost:5000/api/upload', formData, {
+      // 1. Compress and upload the photo
+      const compressedPhoto = await imageCompression(uploadedPhoto.file, compressionOptions);
+      const formData = new FormData();
+      formData.append('photo', compressedPhoto);
+      formData.append('style', selectedStyle);
+      
+      const uploadRes = await axios.post(`${API_BASE}/api/upload`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
 
@@ -57,9 +68,10 @@ export default function App() {
       // Upload reference image if provided
       let referenceId: string | null = null;
       if (referencePhoto) {
+        const compressedRef = await imageCompression(referencePhoto.file, compressionOptions);
         const refForm = new FormData();
-        refForm.append('ref', referencePhoto.file);
-        const refRes = await axios.post('http://localhost:5000/api/upload-ref', refForm, {
+        refForm.append('ref', compressedRef);
+        const refRes = await axios.post(`${API_BASE}/api/upload-ref`, refForm, {
           headers: { 'Content-Type': 'multipart/form-data' }
         });
         referenceId = refRes.data.refId;
@@ -67,7 +79,7 @@ export default function App() {
       }
 
       // 2. Generate headshot
-      const generateRes = await axios.post('http://localhost:5000/api/generate', {
+      const generateRes = await axios.post(`${API_BASE}/api/generate`, {
         jobId: uploadRes.data.jobId,
         style: selectedStyle,
         prompt: customPrompt,
@@ -75,7 +87,7 @@ export default function App() {
       });
 
       // 3. Show result
-      setResultImage(`http://localhost:5000/uploads/${generateRes.data.result}`);
+      setResultImage(`${API_BASE}/uploads/${generateRes.data.result}`);
       setCurrentScreen('result');
     } catch (error: any) {
       console.error('Generation error:', error);
