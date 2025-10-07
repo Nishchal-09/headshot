@@ -78,7 +78,12 @@ export default function App() {
       setResultImage(`http://localhost:5000/uploads/${generateRes.data.result}`);
       setCurrentScreen('result');
     } catch (error: any) {
-      alert('Something went wrong! ' + (error.response?.data?.error || error.message));
+      console.error('Generation error:', error);
+      const errorMsg = error.response?.data?.error 
+        || error.response?.data?.message 
+        || error.message 
+        || 'Unknown error occurred';
+      alert('Something went wrong! ' + errorMsg);
       setCurrentScreen('upload');
     }
   };
