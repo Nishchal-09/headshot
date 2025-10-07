@@ -157,9 +157,12 @@ app.post('/api/upload-ref', uploadRef.single('ref'), (req, res) => {
 
 // Headshot generation endpoint
 app.post('/api/generate', async (req, res) => {
-  const { jobId, prompt: userPrompt, refId } = req.body;
-  if (!jobId || !refId) {
-    return res.status(400).json({ error: 'Missing jobId or refId. This endpoint requires SUBJECT_IMAGE (jobId) and STYLE_IMAGE (refId).' });
+  const { jobId, style, prompt: userPrompt, refId } = req.body;
+  if (!jobId) {
+    return res.status(400).json({ error: 'Missing jobId' });
+  }
+  if (!style && !refId) {
+    return res.status(400).json({ error: 'Missing style or refId. Provide either a style selection or reference image.' });
   }
 
   try {
@@ -181,50 +184,81 @@ app.post('/api/generate', async (req, res) => {
       return res.status(400).json({ error: `Image too large: ${dims.w}x${dims.h}. Max allowed is ${MAX_W}x${MAX_H} px.` });
     }
 
-    // Simple optional user prompt
-    const prompt = typeof userPrompt === 'string' && userPrompt.trim().length > 0
-      ? userPrompt.trim()
-      : '';
+    // Professional prompts for each style
+    const stylePrompts = {
+      corporate: "Generate a professional corporate headshot from this image. Preserve facial identity, natural skin tone, and realistic features. Create a neutral light background (white, light grey, or soft gradient), formal attire (suit, shirt, tie optional), natural lighting with clear facial features, confident but approachable expression, and a clean, minimalistic look suitable for corporate profiles.",
+      creative: "Generate a creative professional headshot from this image. Preserve facial identity, natural skin tone, and realistic features. Create a background with subtle textures or muted colors, smart-casual attire (blazers, shirts, minimal accessories), slight smile with approachable expression, modern lighting with a soft glow, conveying creativity, energy, and professionalism without looking stiff.",
+      executive: "Generate an executive portrait from this image. Preserve facial identity, natural skin tone, and realistic features. Create a high-end professional tone with premium, elegant background (dark gradient or subtle office backdrop), formal attire (suit, tie, optional lapel pin), confident commanding expression, professional lighting with soft shadows, suitable for corporate leadership.",
+      medical: "Generate a medical professional headshot from this image. Preserve facial identity, natural skin tone, and realistic features. Create a white or soft neutral background, lab coat or medical attire, soft natural lighting, gentle approachable and trustworthy expression, suitable for dermatologists and healthcare professionals."
+    };
+
+    // Build prompt based on style or custom
+    let prompt = '';
+    if (refId) {
+      // Reference image mode: minimal prompt
+      prompt = typeof userPrompt === 'string' && userPrompt.trim().length > 0
+        ? userPrompt.trim()
+        : '';
+    } else if (style) {
+      // Style selection mode
+      const basePrompt = stylePrompts[style] || 'Generate a professional headshot from this image.';
+      prompt = userPrompt && typeof userPrompt === 'string' && userPrompt.trim().length > 0
+        ? `${basePrompt}\nAdditional instructions: ${userPrompt.trim()}`
+        : basePrompt;
+    }
 
     console.log('Calling Gemini API:', GEMINI_MODEL);
 
     // Build contents with explicit subject and optional reference messages
     const buildContents = (enforceChange = false) => {
       const contents = [];
-      const baseInstruction = enforceChange 
-        ? 'Generate a NEW photorealistic portrait. Do NOT return either input unchanged.'
-        : 'Generate a NEW photorealistic portrait.';
-      contents.push({
-        role: 'user',
-        parts: [
-          { text: `${baseInstruction}\n\n${prompt || ''}`.trim() },
-          { text: 'IMAGE 1 (SUBJECT): This is the person whose face and identity MUST be preserved. Use this person\'s facial features, skin tone, hairline, glasses, and all distinctive characteristics.' },
-          { inline_data: { mime_type: inputMime, data: imageBase64 } },
-          { text: 'SUBJECT IDENTITY REINFORCEMENT: The face in the output MUST match the SUBJECT (IMAGE 1). Do not use any facial features from IMAGE 2.' },
-          { inline_data: { mime_type: inputMime, data: imageBase64 } }
-        ]
-      });
-      try {
-        const refPath = path.join(__dirname, 'uploads', refId);
-        const refBuf = fs.readFileSync(refPath);
-        const refExt = path.extname(refPath).toLowerCase();
-        let refMime = 'image/jpeg';
-        if (refExt === '.png') refMime = 'image/png';
-        else if (refExt === '.webp') refMime = 'image/webp';
-        const refB64 = refBuf.toString('base64');
-        const refHash = crypto.createHash('sha256').update(refBuf).digest('hex');
-        // Attach the ref hash alongside for echo-detection (not sent to model)
-        contents._refHash = refHash;
+      
+      if (refId) {
+        // Two-image mode: subject + reference
+        const baseInstruction = enforceChange 
+          ? 'Generate a NEW photorealistic portrait. Do NOT return either input unchanged.'
+          : 'Generate a NEW photorealistic portrait.';
         contents.push({
           role: 'user',
           parts: [
-            { text: 'IMAGE 2 (STYLE REFERENCE ONLY): Borrow ONLY the outfit (suit/shirt/tie), pose, lighting, and background. Do NOT use the face or identity from this image. The face must come from IMAGE 1 (SUBJECT).' },
-            { inline_data: { mime_type: refMime, data: refB64 } }
+            { text: `${baseInstruction}\n\n${prompt || ''}`.trim() },
+            { text: 'IMAGE 1 (SUBJECT): This is the person whose face and identity MUST be preserved. Use this person\'s facial features, skin tone, hairline, glasses, and all distinctive characteristics.' },
+            { inline_data: { mime_type: inputMime, data: imageBase64 } },
+            { text: 'SUBJECT IDENTITY REINFORCEMENT: The face in the output MUST match the SUBJECT (IMAGE 1). Do not use any facial features from IMAGE 2.' },
+            { inline_data: { mime_type: inputMime, data: imageBase64 } }
           ]
         });
-        console.log('Sending to Gemini: SUBJECT (IMAGE 1) x2 + STYLE (IMAGE 2)', { jobId, refId, refBytes: refBuf.length });
-      } catch (e) {
-        console.warn('Reference image not available:', e.message);
+        try {
+          const refPath = path.join(__dirname, 'uploads', refId);
+          const refBuf = fs.readFileSync(refPath);
+          const refExt = path.extname(refPath).toLowerCase();
+          let refMime = 'image/jpeg';
+          if (refExt === '.png') refMime = 'image/png';
+          else if (refExt === '.webp') refMime = 'image/webp';
+          const refB64 = refBuf.toString('base64');
+          const refHash = crypto.createHash('sha256').update(refBuf).digest('hex');
+          contents._refHash = refHash;
+          contents.push({
+            role: 'user',
+            parts: [
+              { text: 'IMAGE 2 (STYLE REFERENCE ONLY): Borrow ONLY the outfit (suit/shirt/tie), pose, lighting, and background. Do NOT use the face or identity from this image. The face must come from IMAGE 1 (SUBJECT).' },
+              { inline_data: { mime_type: refMime, data: refB64 } }
+            ]
+          });
+          console.log('Sending to Gemini: SUBJECT x2 + REFERENCE', { jobId, refId, refBytes: refBuf.length });
+        } catch (e) {
+          console.warn('Reference image not available:', e.message);
+        }
+      } else {
+        // Style-only mode: single image with text prompt
+        contents.push({
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: inputMime, data: imageBase64 } }
+          ]
+        });
+        console.log('Sending to Gemini: single image with style prompt', { jobId, style });
       }
       return contents;
     };
